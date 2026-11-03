@@ -245,6 +245,8 @@ function savedPath() {
             }
           </div>
           <div class="toolbar-actions">
+            <input class="file-search" type="search" placeholder="Search this folder" aria-label="Search files" [value]="fileQuery()" (input)="fileQuery.set($any($event.target).value)" />
+            <select aria-label="Sort files" [value]="fileSort()" (change)="fileSort.set($any($event.target).value)"><option value="name">Name</option><option value="modified">Modified</option><option value="size">Size</option></select>
             <button
               class="button secondary"
               [disabled]="!currentPath()"
@@ -274,7 +276,7 @@ function savedPath() {
               ><span>Drop files here, upload, or create a folder.</span>
             </div>
           } @else {
-            @for (entry of entries(); track entry.path) {
+            @for (entry of visibleEntries(); track entry.path) {
               <div class="file-row">
                 <span class="file-name" (dblclick)="openEntry(entry)"
                   ><i>{{ entry.type === "DIRECTORY" ? "▰" : "—" }}</i
@@ -405,7 +407,7 @@ function savedPath() {
                       >Connected {{ device.pairedAt | date: "MMM d, y" }} ·
                       {{
                         device.lastSeenAt
-                          ? "Last seen " + (device.lastSeenAt | date: "MMM d")
+                          ? "Last active " + (device.lastSeenAt | date: "MMM d, y, h:mm a")
                           : "Not seen yet"
                       }}</small
                     >
@@ -443,9 +445,9 @@ function savedPath() {
                 <span class="file-icon">—</span>
                 <div class="activity-name">
                   <b>{{ transfer.fileName }}</b
-                  ><small
+                    ><small
                     >{{ transfer.destinationPath || "Home" }} ·
-                    {{ transfer.createdAt | date: "MMM d, y, h:mm a" }}</small
+                    {{ transfer.createdAt | date: "MMM d, y, h:mm a" }}{{ transfer.failureReason ? ' · ' + transfer.failureReason : '' }}</small
                   >
                 </div>
                 <span
@@ -530,6 +532,8 @@ function savedPath() {
       @if (error()) {
         <div class="toast" role="status">{{ error() }}</div>
       }
+      @if (uploading()) { <div class="upload-progress" role="status"><b>{{uploading()}}</b><span>{{uploadPercent()}}%</span><progress max="100" [value]="uploadPercent()"></progress><button class="button secondary" (click)="cancelUpload()">Cancel upload</button></div> }
+      @if (retryFile()) { <div class="upload-retry" role="alert"><span>{{retryFile()!.name}} לאสำเร็จ</span><button class="button secondary" (click)="retryUpload()">ลองอีกครั้ง</button><button class="button secondary" (click)="retryFile.set(null)">ปิด</button></div> }
     </main>
   </div>`,
 })
@@ -544,6 +548,13 @@ export class AppComponent implements OnInit {
   rootName = signal("");
   currentPath = signal(savedPath());
   entries = signal<FileEntry[]>([]);
+  fileQuery = signal("");
+  fileSort = signal("name");
+  uploading = signal("");
+  uploadPercent = signal(0);
+  retryFile = signal<File | null>(null);
+  activeTransferId = signal("");
+  uploadCancelled = false;
   trashItems = signal<TrashEntry[]>([]);
   devices = signal<Device[]>([]);
   pendingClaims = signal<PairingClaim[]>([]);
@@ -595,6 +606,15 @@ export class AppComponent implements OnInit {
         label,
         path: (built = built ? built + "/" + label : label),
       }));
+  }
+  visibleEntries() {
+    const query = this.fileQuery().trim().toLocaleLowerCase();
+    return this.entries().filter((entry) => !query || entry.name.toLocaleLowerCase().includes(query)).slice().sort((a,b) => {
+      if (a.type !== b.type) return a.type === "DIRECTORY" ? -1 : 1;
+      if (this.fileSort() === "size") return b.size - a.size;
+      if (this.fileSort() === "modified") return b.modifiedAt.localeCompare(a.modifiedAt);
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    });
   }
   chooseFolder() {
     this.root.set("");
@@ -709,18 +729,35 @@ export class AppComponent implements OnInit {
       await this.uploadFile(file);
   }
   private async uploadFile(file: File) {
+    this.uploadCancelled = false;
+    this.uploading.set(file.name);
+    this.uploadPercent.set(0);
+    this.retryFile.set(null);
     try {
       const transfer = await firstValueFrom(
         this.transferApi.createAndFind(this.currentPath(), file.name, file.size),
       );
-      await firstValueFrom(this.transferApi.uploadContent(transfer.id, file));
+      this.activeTransferId.set(transfer.id);
+      await firstValueFrom(this.transferApi.uploadContent(transfer.id, file, (percent) => this.uploadPercent.set(percent)));
       await this.loadTransfers();
       await this.load(this.currentPath());
     } catch (e) {
       await this.loadTransfers();
+      if (!this.uploadCancelled) this.retryFile.set(file);
       this.fail(this.message(e));
+    } finally {
+      this.activeTransferId.set("");
+      this.uploading.set("");
     }
   }
+  async cancelUpload() {
+    const id = this.activeTransferId();
+    this.uploadCancelled = true;
+    if (id) { try { await firstValueFrom(this.transferApi.cancel(id)); } catch (e) { this.fail(this.message(e)); } }
+    this.uploading.set("");
+    this.uploadPercent.set(0);
+  }
+  retryUpload() { const file = this.retryFile(); if (file) void this.uploadFile(file); }
   download(e: FileEntry) {
     window.open(
       "/api/v1/files/download?path=" + encodeURIComponent(e.path),

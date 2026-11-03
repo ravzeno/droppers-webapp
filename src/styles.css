@@ -171,3 +171,6 @@
 .hero-file{border-color:#dce3dc;background:#fff;color:#728b41;box-shadow:0 8px 18px #2b392c0e}
 .hero-file-two{background:#d8f36b;color:#23342a}
 .hero-footnote{color:#657269}
+.file-search,.toolbar-actions select{min-width:145px;padding:8px 10px;border:1px solid #dce3d9;border-radius:8px;background:#fff;color:#26342c;font-size:12px}
+.upload-progress{position:fixed;right:24px;bottom:24px;z-index:8;display:grid;grid-template-columns:1fr auto;gap:8px 16px;width:min(360px,calc(100vw - 32px));padding:14px 16px;border:1px solid #dce3d9;border-radius:12px;background:#fff;box-shadow:0 12px 36px #17211f22;font-size:12px}.upload-progress progress{grid-column:1/-1;width:100%;accent-color:#8eaf37}
+.upload-retry{position:fixed;right:24px;bottom:24px;z-index:9;display:flex;align-items:center;gap:8px;width:min(440px,calc(100vw - 32px));padding:12px;border:1px solid #e5c7bd;border-radius:12px;background:#fff8f5;box-shadow:0 12px 36px #17211f22;font-size:12px}.upload-retry span{flex:1;color:#874c3f}

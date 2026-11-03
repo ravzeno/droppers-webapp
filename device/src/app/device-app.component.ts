@@ -1,8 +1,9 @@
-import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpHeaders, HttpParams, HttpEventType } from '@angular/common/http';
 import { CommonModule, DatePipe } from '@angular/common';
 import { Component, ElementRef, OnDestroy, OnInit, ViewChild, inject, signal } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { filter, firstValueFrom, tap } from 'rxjs';
 import { DeviceEntryRowComponent } from './device-entry-row.component';
+import { DeviceImagePreviewComponent } from './device-image-preview.component';
 
 interface PairingRequest {
   claimId: string;
@@ -63,7 +64,7 @@ type Dialog = {
   action: (value: string) => Promise<void>;
 };
 @Component({
-  selector: 'device-root', standalone: true, imports: [CommonModule, DatePipe, DeviceEntryRowComponent],
+  selector: 'device-root', standalone: true, imports: [CommonModule, DatePipe, DeviceEntryRowComponent, DeviceImagePreviewComponent],
   template: `
   <div class="device-app">
     <header class="topbar"><a class="brand" href="/"><span class="brand-mark">↓</span><span>droppers</span></a><div class="top-context"><span class="online-dot"></span>{{ storage()?.rootName || 'อุปกรณ์' }}</div></header>
@@ -102,22 +103,46 @@ type Dialog = {
     } @else if (stage() === 'waiting') {
       <main class="state-page"><section class="state-card"><span class="pending-mark">◷</span><p class="eyebrow">คำขอส่งแล้ว</p><h1>รอเจ้าของคอมอนุมัติ</h1><p>เปิดหน้า Devices บนคอม แล้วกด “Allow device” เพื่ออนุญาต {{deviceName()}}</p><div class="waiting-line"><span></span>กำลังรอการยืนยัน…</div><button class="text-button" (click)="cancelPairing()">ยกเลิกคำขอ</button></section></main>
     } @else if (stage() === 'files') {
+      @if (section() === 'files') {
       <main class="files-page">
         <section class="device-welcome"><div><p class="eyebrow">เชื่อมต่อแล้ว</p><h1>ส่งไฟล์เข้าคอม</h1><p>ไฟล์จะถูกบันทึกลงใน <b>{{storage()?.rootName}}</b> บนคอมของคุณ</p></div><span class="connected-mark">✓</span></section>
         @if (storage(); as info) { <section class="storage-meter"><div class="meter-label"><span>พื้นที่ว่าง</span><b>{{formatSize(info.usableBytes)}} จาก {{formatSize(info.totalBytes)}}</b></div><div class="meter-track"><span [style.width.%]="usagePercent(info)"></span></div><small>ที่จัดเก็บ: {{info.rootName}}</small></section> }
         <div class="file-toolbar"><div class="crumbs"><button (click)="loadFiles('')">ไฟล์ของฉัน</button>@for (part of breadcrumbs(); track part.path) { <span>/</span><button (click)="loadFiles(part.path)">{{part.name}}</button> }</div><div class="toolbar-buttons"><button class="btn secondary" [disabled]="!currentPath()" (click)="goUp()">↑ กลับ</button><button class="btn secondary" (click)="createFolder()">+ โฟลเดอร์</button><button class="btn primary" (click)="picker.click()">＋ เลือกไฟล์</button><input #picker type="file" multiple hidden (change)="uploadFiles($event)"></div></div>
+        <div class="device-file-tools"><input type="search" placeholder="ค้นหาในโฟลเดอร์นี้" aria-label="ค้นหาไฟล์" [value]="fileQuery()" (input)="fileQuery.set($any($event.target).value)"><select aria-label="เรียงไฟล์" [value]="fileSort()" (change)="fileSort.set($any($event.target).value)"><option value="name">ชื่อ</option><option value="modified">แก้ไขล่าสุด</option><option value="size">ขนาด</option></select></div>
+        @if (uploadName()) { <div class="device-upload-progress" role="status"><span>{{uploadName()}} · {{uploadPercent()}}%</span><progress max="100" [value]="uploadPercent()"></progress><button class="btn secondary" (click)="cancelUpload()">ยกเลิก</button></div> }
+        @if (retryFile()) { <div class="device-upload-retry" role="alert"><span>{{retryFile()!.name}} ส่งไม่สำเร็จ</span><button class="btn secondary" (click)="retryUpload()">ลองอีกครั้ง</button><button class="btn secondary" (click)="retryFile.set(null)">ปิด</button></div> }
         <section class="file-panel" (dragover)="allowDrop($event)" (drop)="dropFiles($event)">
           <div class="file-panel-heading"><div><h2>{{currentPath() || 'ไฟล์ของฉัน'}}</h2><span>{{entries().length}} รายการ</span></div></div>
           @if (busy()) { <div class="empty-state">กำลังโหลด…</div> }
           @else if (!entries().length) { <div class="empty-state"><span class="empty-icon">▤</span><b>โฟลเดอร์นี้ยังว่าง</b><span>เลือกไฟล์จากมือถือ หรือวางไฟล์ที่นี่</span><button class="btn primary" (click)="picker.click()">เลือกไฟล์จากมือถือ</button></div> }
-          @else { @for (entry of entries(); track entry.path) { <device-entry-row [icon]="entry.type === 'DIRECTORY' ? '▰' : '—'" [title]="entry.name" [details]="(entry.type === 'DIRECTORY' ? 'โฟลเดอร์' : formatSize(entry.size)) + ' · ' + (entry.modifiedAt | date:'d MMM y')" actionLabel="•••" (open)="entry.type === 'DIRECTORY' ? loadFiles(entry.path) : download(entry)" (action)="openFileActions(entry)" /> } }
+          @else if (!visibleEntries().length) { <div class="empty-state"><b>ไม่พบไฟล์ที่ตรงกับคำค้น</b><span>ลองเปลี่ยนคำค้นหา</span></div> }
+          @else {
+            @if (visibleImageEntries().length) {
+              <div class="photo-grid" aria-label="รูปภาพ">
+                @for (entry of visibleImageEntries(); track entry.path) {
+                  <article class="photo-card">
+                    <button class="photo-open" type="button" [attr.aria-label]="'ดูรูป ' + entry.name" (click)="openImage(entry)">
+                      <device-image-preview [path]="entry.path" [accessToken]="accessToken()" [alt]="entry.name" />
+                      <span class="photo-caption">{{entry.name}}</span>
+                    </button>
+                    <button class="photo-more" type="button" [attr.aria-label]="'ตัวเลือก ' + entry.name" (click)="openFileActions(entry)">•••</button>
+                  </article>
+                }
+              </div>
+            }
+            @for (entry of visibleOtherEntries(); track entry.path) {
+              <device-entry-row [icon]="entry.type === 'DIRECTORY' ? '▰' : '—'" [title]="entry.name" [details]="(entry.type === 'DIRECTORY' ? 'โฟลเดอร์' : formatSize(entry.size)) + ' · ' + (entry.modifiedAt | date:'d MMM y')" actionLabel="•••" (open)="entry.type === 'DIRECTORY' ? loadFiles(entry.path) : download(entry)" (action)="openFileActions(entry)" />
+            }
+          }
         </section>
         <section class="bottom-nav"><button [class.selected]="section() === 'files'" (click)="section.set('files')"><span>▤</span>ไฟล์</button><button [class.selected]="section() === 'trash'" (click)="showTrash()"><span>⌫</span>ถังขยะ</button><button (click)="disconnect()"><span>↗</span>ออกจากระบบ</button></section>
       </main>
-    } @else {
-      <main class="files-page"><section class="device-welcome"><div><p class="eyebrow">รายการที่ลบ</p><h1>ถังขยะ</h1><p>กู้คืนไฟล์กลับไปยังตำแหน่งเดิมได้</p></div><button class="btn secondary" (click)="section.set('files'); loadFiles(currentPath())">กลับไปไฟล์</button></section><section class="file-panel">@if (!trashItems().length) { <div class="empty-state"><span class="empty-icon">⌫</span><b>ถังขยะว่าง</b></div> } @else { @for (item of trashItems(); track item.id) { <device-entry-row icon="—" [title]="item.name" [details]="item.originalPath + ' · ' + (item.deletedAt | date:'d MMM y')" actionLabel="กู้คืน" (action)="restore(item)" /> } }</section><section class="bottom-nav"><button (click)="section.set('files'); loadFiles(currentPath())"><span>▤</span>ไฟล์</button><button class="selected"><span>⌫</span>ถังขยะ</button><button (click)="disconnect()"><span>↗</span>ออกจากระบบ</button></section></main>
+      } @else {
+      <main class="files-page"><section class="device-welcome"><div><p class="eyebrow">รายการที่ลบ</p><h1>ถังขยะ</h1><p>กู้คืนไฟล์กลับไปยังตำแหน่งเดิมได้</p></div><button class="btn secondary" (click)="section.set('files'); loadFiles(currentPath())">กลับไปไฟล์</button></section><section class="file-panel">@if (busy()) { <div class="empty-state">กำลังโหลด…</div> } @else if (!trashItems().length) { <div class="empty-state"><span class="empty-icon">⌫</span><b>ถังขยะว่าง</b></div> } @else { @for (item of trashItems(); track item.id) { <device-entry-row icon="—" [title]="item.name" [details]="item.originalPath + ' · ' + (item.deletedAt | date:'d MMM y')" actionLabel="กู้คืน" (action)="restore(item)" /> } }</section><section class="bottom-nav"><button (click)="section.set('files'); loadFiles(currentPath())"><span>▤</span>ไฟล์</button><button class="selected"><span>⌫</span>ถังขยะ</button><button (click)="disconnect()"><span>↗</span>ออกจากระบบ</button></section></main>
+      }
     }
     @if (dialog(); as dlg) { <div class="sheet-backdrop" (click)="dialog.set(null)"><form class="action-sheet" (click)="$event.stopPropagation()" (submit)="submitDialog($event)"><div class="sheet-grab"></div><h2>{{dlg.title}}</h2>@if (dlg.options?.length) { <div class="sheet-options">@for (option of dlg.options; track option) { <button type="button" class="sheet-option" [class.option-danger]="option === 'ลบ'" (click)="chooseAction(option)">{{option}}</button> }</div> } @else if (dlg.danger) { <p class="confirm-copy">{{dlg.label}}</p> } @else { <label>{{dlg.label}}<input name="actionValue" [value]="dlg.value || ''" autofocus></label> }@if (!dlg.options?.length) { <div class="sheet-buttons"><button type="button" class="btn secondary" (click)="dialog.set(null)">ยกเลิก</button><button type="submit" class="btn" [class.primary]="!dlg.danger" [class.danger-btn]="dlg.danger">{{dlg.danger ? 'ยืนยัน' : 'บันทึก'}}</button></div> }</form></div> }
+    @if (activeImage(); as image) { <div class="image-viewer" role="dialog" aria-modal="true" [attr.aria-label]="image.name" (click)="closeImage()"><button class="image-viewer-close" type="button" aria-label="ปิด" (click)="$event.stopPropagation(); closeImage()">×</button><div class="image-viewer-content" (click)="$event.stopPropagation()"><img [src]="image.url" [alt]="image.name"><div><b>{{image.name}}</b><span>{{formatSize(image.entry.size)}}</span></div></div></div> }
     @if (toast()) { <div class="toast" role="status">{{toast()}}</div> }
   </div>`
 })
@@ -150,6 +175,14 @@ export class DeviceAppComponent implements OnInit, OnDestroy {
   toast = signal('');
   dialog = signal<Dialog | null>(null);
   cameraActive = signal(false);
+  activeImage = signal<{ entry: FileEntry; name: string; url: string } | null>(null);
+  fileQuery = signal('');
+  fileSort = signal('name');
+  uploadName = signal('');
+  uploadPercent = signal(0);
+  retryFile = signal<File | null>(null);
+  activeTransferId = signal('');
+  uploadCancelled = false;
 
   async ngOnInit() {
     this.deviceId.set(this.getOrCreateId());
@@ -195,6 +228,7 @@ export class DeviceAppComponent implements OnInit, OnDestroy {
   ngOnDestroy() {
     if (this.poller) clearTimeout(this.poller);
     this.stopScanner();
+    this.closeImage();
   }
 
   async startScanner() {
@@ -476,6 +510,53 @@ export class DeviceAppComponent implements OnInit, OnDestroy {
     }
   }
 
+  isImage(entry: FileEntry) {
+    return entry.type === 'FILE' && (
+      entry.mimeType?.toLowerCase().startsWith('image/') === true ||
+      /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/i.test(entry.name)
+    );
+  }
+
+  imageEntries() {
+    return this.entries().filter((entry) => this.isImage(entry));
+  }
+
+  visibleEntries() {
+    const query = this.fileQuery().trim().toLocaleLowerCase();
+    return this.entries().filter((entry) => !query || entry.name.toLocaleLowerCase().includes(query)).slice().sort((a,b) => {
+      if (a.type !== b.type) return a.type === 'DIRECTORY' ? -1 : 1;
+      if (this.fileSort() === 'size') return b.size - a.size;
+      if (this.fileSort() === 'modified') return b.modifiedAt.localeCompare(a.modifiedAt);
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }
+  visibleImageEntries() { return this.visibleEntries().filter((entry) => this.isImage(entry)); }
+  visibleOtherEntries() { return this.visibleEntries().filter((entry) => !this.isImage(entry)); }
+
+  otherEntries() {
+    return this.entries().filter((entry) => !this.isImage(entry));
+  }
+
+  async openImage(entry: FileEntry) {
+    this.closeImage();
+    try {
+      const blob = await firstValueFrom(this.http.get('/api/v1/files/download', {
+        headers: this.headers(),
+        params: { path: entry.path },
+        responseType: 'blob',
+      }));
+      this.activeImage.set({ entry, name: entry.name, url: URL.createObjectURL(blob) });
+    } catch (error) {
+      this.fail(this.errorMessage(error, 'เปิดรูปไม่สำเร็จ'));
+    }
+  }
+
+  closeImage() {
+    const image = this.activeImage();
+    if (image) URL.revokeObjectURL(image.url);
+    this.activeImage.set(null);
+  }
+
   breadcrumbs() {
     let path = '';
     return this.currentPath().split('/').filter(Boolean).map((name) => {
@@ -510,6 +591,10 @@ export class DeviceAppComponent implements OnInit, OnDestroy {
 
   private async uploadOne(file: File) {
     this.busy.set(true);
+    this.uploadCancelled = false;
+    this.retryFile.set(null);
+    this.uploadName.set(file.name);
+    this.uploadPercent.set(0);
     const destinationPath = this.currentPath();
     const headers = this.headers();
 
@@ -537,6 +622,7 @@ export class DeviceAppComponent implements OnInit, OnDestroy {
           item.expectedBytes === file.size,
       );
       if (!transfer) throw new Error('ไม่พบรายการอัปโหลดที่เพิ่งสร้าง');
+      this.activeTransferId.set(transfer.id);
 
       await firstValueFrom(
         this.http.put(
@@ -544,18 +630,32 @@ export class DeviceAppComponent implements OnInit, OnDestroy {
           file,
           {
             headers: headers.set('Content-Type', 'application/octet-stream'),
-            responseType: 'json',
+            responseType: 'json', observe: 'events', reportProgress: true,
           },
-        ),
+        ).pipe(tap((event) => { if (event.type === HttpEventType.UploadProgress && event.total) this.uploadPercent.set(Math.round(event.loaded * 100 / event.total)); }), filter((event) => event.type === HttpEventType.Response)),
       );
       await this.loadFiles(destinationPath);
       this.say(`ส่ง ${file.name} สำเร็จ`);
     } catch (error) {
+      if (!this.uploadCancelled) this.retryFile.set(file);
       this.fail(this.errorMessage(error, `ส่ง ${file.name} ไม่สำเร็จ`));
     } finally {
       this.busy.set(false);
+      this.uploadName.set('');
+      this.activeTransferId.set('');
     }
   }
+  async cancelUpload() {
+    this.uploadCancelled = true;
+    const id = this.activeTransferId();
+    if (id) {
+      try { await firstValueFrom(this.http.delete(`/api/v1/transfers/uploads/${encodeURIComponent(id)}`, { headers: this.headers() })); }
+      catch (error) { this.fail(this.errorMessage(error, 'ยกเลิกอัปโหลดไม่สำเร็จ')); }
+    }
+    this.uploadName.set('');
+    this.uploadPercent.set(0);
+  }
+  retryUpload() { const file = this.retryFile(); if (file) void this.uploadOne(file); }
 
   async download(entry: FileEntry) {
     try {

@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { map, switchMap } from 'rxjs';
+import { HttpEventType } from '@angular/common/http';
+import { filter, map, switchMap, tap } from 'rxjs';
 
 export interface UploadTransfer {
   id: string;
@@ -59,12 +60,12 @@ export class TransferApiService {
     );
   }
 
-  uploadContent(id: string, file: File) {
+  uploadContent(id: string, file: File, onProgress?: (percent: number) => void) {
     return this.http.put<UploadTransfer>(
       `/api/v1/transfers/uploads/${encodeURIComponent(id)}/content`,
       file,
-      { headers: { 'Content-Type': 'application/octet-stream' } },
-    );
+      { headers: { 'Content-Type': 'application/octet-stream' }, observe: 'events', reportProgress: true },
+    ).pipe(tap((event) => { if (event.type === HttpEventType.UploadProgress && event.total) onProgress?.(Math.round(event.loaded * 100 / event.total)); }), filter((event) => event.type === HttpEventType.Response));
   }
 
   cancel(id: string) {
