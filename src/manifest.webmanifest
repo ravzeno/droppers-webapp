@@ -1,0 +1,10 @@
+{
+  "name": "Droppers",
+  "short_name": "Droppers",
+  "description": "A local-first file drop and explorer.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f5f1",
+  "theme_color": "#17211f",
+  "icons": [{ "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
